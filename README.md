@@ -1,36 +1,37 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# sqldiff
 
-## Getting Started
+Compare two MySQL dumps. Extract only what changed.
 
-First, run the development server:
+Use case: you pull production into local, work on the codebase for a day or two, and during that time prod gets new data (orders, comments, members, …). `sqldiff` takes the **old** prod snapshot and the **new** prod snapshot, computes the difference per table, and gives you a single `sync.sql` file that you can apply on your local DB.
+
+## Run
 
 ```bash
+npm install
 npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+Open <http://localhost:3000>.
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+1. Drop the **old** dump (the snapshot you took when you started working locally).
+2. Drop the **new** dump (the current production snapshot).
+3. Hit **Compare**.
+4. Review the per-table summary, tick the tables you want to sync, and download `sync.sql`.
+5. Apply on your local DB: `mysql -u root -p mydb < sync.sql`.
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+## How it works
 
-## Learn More
+- Streaming line-by-line parser reads each `mysqldump` file, extracts `CREATE TABLE` definitions (column list + primary key) and every `INSERT INTO ... VALUES (...)` tuple.
+- Each row is hashed (`md5(values)`) and indexed by its primary key.
+- The differ compares the two per-table snapshots: present in new only → **insert**, present in old only → **delete**, same key but different hash → **update**.
+- Output `sync.sql` is wrapped in `SET FOREIGN_KEY_CHECKS=0; START TRANSACTION; … COMMIT;` so child rows can reference parent rows that are still pending in the same batch. Updates are emitted as `DELETE` + `INSERT` for safety.
 
-To learn more about Next.js, take a look at the following resources:
+## Try with the bundled fixtures
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+`test/fixtures/old.sql` and `test/fixtures/new.sql` are small `mysqldump`-format files with realistic differences across 6 tables. Drop them in to see the tool end-to-end without needing your own database.
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+## Notes
 
-## Deploy on Vercel
-
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
-
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+- Tables without a primary key are still detected, but `UPDATE`/`DELETE` may match unintended rows. The UI flags them with a `no pk` badge.
+- Schema differences (added/dropped columns, changed types) are not handled — this tool focuses on **row data**, not DDL.
+- The dev server's process holds parsed snapshots in memory; restarting drops in-flight jobs.
