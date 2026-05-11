@@ -1,5 +1,7 @@
 "use client";
 
+import { useLocale, type StringKey } from "@/lib/i18n";
+
 type Props = {
   status: "queued" | "parsing-old" | "parsing-new" | "diffing";
   currentTable: string | null;
@@ -8,11 +10,11 @@ type Props = {
   rowsSeen: number;
 };
 
-const LABELS: Record<Props["status"], string> = {
-  queued: "Queued…",
-  "parsing-old": "Parsing old dump",
-  "parsing-new": "Parsing new dump",
-  diffing: "Computing diff",
+const LABEL_KEYS: Record<Props["status"], StringKey> = {
+  queued: "queued",
+  "parsing-old": "parsingOld",
+  "parsing-new": "parsingNew",
+  diffing: "diffing",
 };
 
 export function ProgressView({
@@ -22,6 +24,8 @@ export function ProgressView({
   totalBytes,
   rowsSeen,
 }: Props) {
+  const { t } = useLocale();
+
   const pct =
     status === "diffing"
       ? 100
@@ -32,7 +36,7 @@ export function ProgressView({
   return (
     <section className="rounded-lg border border-zinc-200 bg-white px-6 py-5">
       <div className="flex items-baseline justify-between gap-4 mb-4">
-        <h2 className="text-sm font-medium text-zinc-900">{LABELS[status]}</h2>
+        <h2 className="text-sm font-medium text-zinc-900">{t(LABEL_KEYS[status])}</h2>
         <span className="font-mono text-xs text-zinc-500">{pct}%</span>
       </div>
 
@@ -45,19 +49,19 @@ export function ProgressView({
 
       <dl className="mt-5 grid grid-cols-3 gap-4 text-xs">
         <div>
-          <dt className="text-zinc-500 uppercase tracking-wider">Current table</dt>
+          <dt className="text-zinc-500 uppercase tracking-wider">{t("current")}</dt>
           <dd className="mt-1 font-mono text-zinc-900">
             {currentTable ?? "—"}
           </dd>
         </div>
         <div>
-          <dt className="text-zinc-500 uppercase tracking-wider">Rows seen</dt>
+          <dt className="text-zinc-500 uppercase tracking-wider">{t("rowsSeen")}</dt>
           <dd className="mt-1 font-mono text-zinc-900">
             {rowsSeen.toLocaleString()}
           </dd>
         </div>
         <div>
-          <dt className="text-zinc-500 uppercase tracking-wider">Read</dt>
+          <dt className="text-zinc-500 uppercase tracking-wider">{pct}%</dt>
           <dd className="mt-1 font-mono text-zinc-900">
             {formatBytes(bytesRead)} / {formatBytes(totalBytes)}
           </dd>

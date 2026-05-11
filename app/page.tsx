@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import { UploadZone } from "@/components/UploadZone";
 import { ProgressView } from "@/components/ProgressView";
 import { DiffTableList, type DiffSummaryDto } from "@/components/DiffTableList";
+import { LocaleToggle, useLocale } from "@/lib/i18n";
 
 type JobDto = {
   id: string;
@@ -19,6 +20,7 @@ type JobDto = {
 };
 
 export default function Page() {
+  const { t } = useLocale();
   const [oldFile, setOldFile] = useState<File | null>(null);
   const [newFile, setNewFile] = useState<File | null>(null);
   const [submitting, setSubmitting] = useState(false);
@@ -37,12 +39,12 @@ export default function Page() {
       const res = await fetch("/api/jobs", { method: "POST", body: fd });
       const body = await res.json();
       if (!res.ok) {
-        setSubmitError(body?.error ?? "Upload failed");
+        setSubmitError(body?.error ?? t("error"));
         return;
       }
       setJobId(body.jobId);
     } catch (err) {
-      setSubmitError(err instanceof Error ? err.message : "Upload failed");
+      setSubmitError(err instanceof Error ? err.message : t("error"));
     } finally {
       setSubmitting(false);
     }
@@ -80,7 +82,7 @@ export default function Page() {
           id: jobId,
           status: "error",
           progress: { currentTable: null, bytesRead: 0, totalBytes: 0, rowsSeen: 0 },
-          error: err instanceof Error ? err.message : "Polling failed",
+          error: err instanceof Error ? err.message : t("error"),
         });
       }
     };
@@ -90,35 +92,46 @@ export default function Page() {
       cancelled = true;
       if (timer) clearTimeout(timer);
     };
-  }, [jobId]);
+  }, [jobId, t]);
 
   return (
     <main className="mx-auto max-w-3xl px-6 py-12 md:py-16">
       <header className="flex items-baseline justify-between mb-10">
         <div>
           <h1 className="font-mono text-lg font-medium tracking-tight text-zinc-900">
-            sqldiff
+            {t("title")}
           </h1>
-          <p className="text-sm text-zinc-500 mt-1">
-            Compare two MySQL dumps. Extract only what changed.
-          </p>
+          <p className="text-sm text-zinc-500 mt-1">{t("subtitle")}</p>
         </div>
-        {jobId && (
-          <button
-            type="button"
-            onClick={handleReset}
-            className="text-xs text-zinc-500 hover:text-zinc-900 transition-colors"
-          >
-            ✕ reset
-          </button>
-        )}
+        <div className="flex items-center gap-4">
+          {jobId && (
+            <button
+              type="button"
+              onClick={handleReset}
+              className="text-xs text-zinc-500 hover:text-zinc-900 transition-colors"
+            >
+              {t("reset")}
+            </button>
+          )}
+          <LocaleToggle />
+        </div>
       </header>
 
       {!jobId && (
         <section className="space-y-6">
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-            <UploadZone label="OLD dump" file={oldFile} onFileChange={setOldFile} />
-            <UploadZone label="NEW dump" file={newFile} onFileChange={setNewFile} />
+            <UploadZone
+              label={t("oldLabel")}
+              hint={t("oldHint")}
+              file={oldFile}
+              onFileChange={setOldFile}
+            />
+            <UploadZone
+              label={t("newLabel")}
+              hint={t("newHint")}
+              file={newFile}
+              onFileChange={setNewFile}
+            />
           </div>
 
           {submitError && (
@@ -139,7 +152,7 @@ export default function Page() {
                 disabled:bg-zinc-200 disabled:text-zinc-400 disabled:cursor-not-allowed
               "
             >
-              {submitting ? "uploading…" : "Compare →"}
+              {submitting ? t("uploading") : t("compare")}
             </button>
           </div>
         </section>
@@ -149,7 +162,7 @@ export default function Page() {
         <section className="space-y-4">
           {job.status === "error" && (
             <div className="rounded-md border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700">
-              {job.error ?? "Something went wrong."}
+              {job.error ?? t("error")}
             </div>
           )}
 

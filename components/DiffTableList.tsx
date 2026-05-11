@@ -2,6 +2,7 @@
 
 import { useMemo, useState } from "react";
 import { DiffRow, type SerializedTable } from "./DiffRow";
+import { useLocale } from "@/lib/i18n";
 
 export type DiffSummaryDto = {
   oldFileName: string;
@@ -18,34 +19,31 @@ type Props = {
 };
 
 export function DiffTableList({ jobId, summary }: Props) {
-  const tablesWithChanges = useMemo(
-    () =>
-      summary.tables.filter(
-        (t) => t.insertCount + t.updateCount + t.deleteCount > 0
-      ),
+  const { t } = useLocale();
+
+  // Only "missing" rows (deleteCount = OLD-only) are emitted in missing-only mode.
+  // Tables without any missing rows cannot be acted on.
+  const actionableTables = useMemo(
+    () => summary.tables.filter((t) => t.deleteCount > 0),
     [summary.tables]
   );
 
   const [selected, setSelected] = useState<Set<string>>(
-    () => new Set(tablesWithChanges.map((t) => t.table))
+    () => new Set(actionableTables.map((t) => t.table))
   );
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const [downloading, setDownloading] = useState(false);
 
-  const totalChanges = useMemo(
-    () =>
-      summary.tables.reduce(
-        (sum, t) => sum + t.insertCount + t.updateCount + t.deleteCount,
-        0
-      ),
+  const totalMissing = useMemo(
+    () => summary.tables.reduce((sum, t) => sum + t.deleteCount, 0),
     [summary.tables]
   );
 
   const selectedStmtCount = useMemo(() => {
     let n = 0;
-    for (const t of summary.tables) {
-      if (!selected.has(t.table)) continue;
-      n += t.insertCount + t.updateCount * 2 + t.deleteCount;
+    for (const tbl of summary.tables) {
+      if (!selected.has(tbl.table)) continue;
+      n += tbl.deleteCount;
     }
     return n;
   }, [selected, summary.tables]);
@@ -69,7 +67,7 @@ export function DiffTableList({ jobId, summary }: Props) {
   };
 
   const selectAll = () =>
-    setSelected(new Set(tablesWithChanges.map((t) => t.table)));
+    setSelected(new Set(actionableTables.map((t) => t.table)));
   const clearAll = () => setSelected(new Set());
 
   const download = async () => {
@@ -82,7 +80,7 @@ export function DiffTableList({ jobId, summary }: Props) {
       });
       if (!res.ok) {
         const err = await res.json().catch(() => ({}));
-        alert(err.error ?? "Download failed");
+        alert(err.error ?? t("error"));
         return;
       }
       const blob = await res.blob();
@@ -104,9 +102,9 @@ export function DiffTableList({ jobId, summary }: Props) {
       <header className="flex items-center justify-between gap-3 px-4 py-3 border-b border-zinc-100 text-xs">
         <div className="text-zinc-500">
           <span className="text-zinc-900 font-medium">
-            {summary.tables.length} tables
+            {summary.tables.length} {t("tablesWord")}
           </span>{" "}
-          · {totalChanges} change{totalChanges === 1 ? "" : "s"}
+          · {totalMissing} {t("missingTotal")}
         </div>
         <div className="flex items-center gap-3">
           <button
@@ -114,7 +112,7 @@ export function DiffTableList({ jobId, summary }: Props) {
             onClick={selectAll}
             className="text-zinc-500 hover:text-zinc-900 transition-colors"
           >
-            select all
+            {t("selectAll")}
           </button>
           <span className="text-zinc-300">·</span>
           <button
@@ -122,33 +120,37 @@ export function DiffTableList({ jobId, summary }: Props) {
             onClick={clearAll}
             className="text-zinc-500 hover:text-zinc-900 transition-colors"
           >
-            clear
+            {t("clearOne")}
           </button>
         </div>
       </header>
 
+      <div className="px-4 py-2 text-[11px] text-zinc-500 bg-zinc-50/60 border-b border-zinc-100">
+        {t("note")}
+      </div>
+
       <ul>
-        {summary.tables.map((t) => (
+        {summary.tables.map((tbl) => (
           <DiffRow
-            key={t.table}
-            table={t}
-            selected={selected.has(t.table)}
-            expanded={expanded.has(t.table)}
-            onToggleSelect={() => toggleSelect(t.table)}
-            onToggleExpand={() => toggleExpand(t.table)}
+            key={tbl.table}
+            table={tbl}
+            selected={selected.has(tbl.table)}
+            expanded={expanded.has(tbl.table)}
+            onToggleSelect={() => toggleSelect(tbl.table)}
+            onToggleExpand={() => toggleExpand(tbl.table)}
           />
         ))}
       </ul>
 
       <footer className="flex items-center justify-between gap-4 px-4 py-3 border-t border-zinc-100 bg-zinc-50/60 text-xs">
         <div className="text-zinc-500">
-          {selected.size} selected · {selectedStmtCount} statement
-          {selectedStmtCount === 1 ? "" : "s"}
+          {selected.size} {t("selected")} · {selectedStmtCount}{" "}
+          {selectedStmtCount === 1 ? t("statement") : t("statements")}
         </div>
         <button
           type="button"
           onClick={download}
-          disabled={selected.size === 0 || downloading}
+          disabled={selected.size === 0 || selectedStmtCount === 0 || downloading}
           className="
             inline-flex items-center gap-2 px-4 py-1.5 rounded-md
             bg-emerald-600 text-white font-medium text-xs
@@ -156,7 +158,7 @@ export function DiffTableList({ jobId, summary }: Props) {
             disabled:bg-zinc-200 disabled:text-zinc-400 disabled:cursor-not-allowed
           "
         >
-          {downloading ? "preparing…" : "↓ sync.sql"}
+          {downloading ? t("preparing") : t("download")}
         </button>
       </footer>
     </section>
