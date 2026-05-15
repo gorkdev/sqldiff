@@ -221,16 +221,15 @@ describe("end-to-end realistic scenario", () => {
 
     const sql = writeSyncSql(summary, {
       tables: new Set(["admins", "new_feature_log"]),
-      dropTables: new Set(["legacy_garbage"]),
       updateOverrides: overrides,
     });
 
-    // DDL section
-    expect(sql).toContain("DROP TABLE IF EXISTS `legacy_garbage`;");
+    // DDL section: only DROP+CREATE for old-only; new-only is untouched.
+    expect(sql).not.toContain("DROP TABLE IF EXISTS `legacy_garbage`");
     expect(sql).toContain("DROP TABLE IF EXISTS `new_feature_log`;");
     expect(sql).toContain("CREATE TABLE `new_feature_log`");
     expect(sql).toMatch(/-- DDL create: new_feature_log/);
-    expect(sql).toMatch(/-- DDL drop: legacy_garbage/);
+    expect(sql).not.toMatch(/-- DDL drop:/);
 
     // DML: missing row for common admin
     expect(sql).toContain(
@@ -253,9 +252,6 @@ describe("end-to-end realistic scenario", () => {
     const startTx = sql.indexOf("START TRANSACTION;");
     const commitTx = sql.indexOf("COMMIT;");
     expect(ddlCreate).toBeLessThan(startTx);
-    expect(sql.indexOf("DROP TABLE IF EXISTS `legacy_garbage`;")).toBeLessThan(
-      startTx
-    );
 
     // INSERT and UPDATE for admins are inside the transaction
     expect(sql.indexOf("UPDATE `admins`")).toBeGreaterThan(startTx);

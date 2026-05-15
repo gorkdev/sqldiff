@@ -64,10 +64,7 @@ export function DiffTableList({ jobId, summary }: Props) {
     let n = 0;
     for (const tbl of summary.tables) {
       if (!selected.has(tbl.table)) continue;
-      if (tbl.status === "new-only") {
-        n += 1;
-        continue;
-      }
+      if (tbl.status === "new-only") continue; // informational only
       const excluded = missingExcluded.get(tbl.table)?.size ?? 0;
       n += Math.max(0, tbl.deleteCount - excluded);
       if (tbl.status === "old-only") n += 1;
@@ -151,11 +148,10 @@ export function DiffTableList({ jobId, summary }: Props) {
         if (Object.keys(tableObj).length > 0) overrides[table] = tableObj;
       }
       const sqlTables: string[] = [];
-      const dropTables: string[] = [];
       for (const tbl of summary.tables) {
         if (!selected.has(tbl.table)) continue;
-        if (tbl.status === "new-only") dropTables.push(tbl.table);
-        else sqlTables.push(tbl.table);
+        if (tbl.status === "new-only") continue; // never sent to server
+        sqlTables.push(tbl.table);
       }
       const excludeMissing: Record<string, string[]> = {};
       for (const [table, keys] of missingExcluded) {
@@ -167,7 +163,6 @@ export function DiffTableList({ jobId, summary }: Props) {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           tables: sqlTables,
-          dropTables,
           updateOverrides: overrides,
           excludeMissing,
         }),

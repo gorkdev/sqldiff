@@ -78,8 +78,8 @@ export function DiffRow({
   const hasAnyDiff = missing + extra + changed > 0;
   const isOldOnly = table.status === "old-only";
   const isNewOnly = table.status === "new-only";
-  const actionable =
-    isOldOnly || isNewOnly || missing > 0 || revertedRows > 0;
+  // New-only tables are informational only — left untouched on the target.
+  const actionable = isOldOnly || missing > 0 || revertedRows > 0;
   const noPk = table.pkColumns.length === 0;
 
   return (
@@ -90,16 +90,8 @@ export function DiffRow({
           checked={selected && actionable}
           disabled={!actionable}
           onChange={onToggleSelect}
-          title={
-            isOldOnly
-              ? t("tableOldOnlyTip")
-              : isNewOnly
-              ? t("tableNewOnlyTip")
-              : undefined
-          }
-          className={`h-4 w-4 disabled:opacity-30 ${
-            isNewOnly ? "accent-rose-600" : "accent-emerald-600"
-          }`}
+          title={isOldOnly ? t("tableOldOnlyTip") : undefined}
+          className="h-4 w-4 disabled:opacity-30 accent-emerald-600"
           aria-label={`Select ${table.table}`}
         />
 
@@ -126,9 +118,9 @@ export function DiffRow({
           {isNewOnly && (
             <span
               title={t("tableNewOnlyTip")}
-              className="text-[10px] uppercase tracking-wider text-rose-700 bg-rose-50 border border-rose-200 rounded px-1.5 py-0.5"
+              className="text-[10px] uppercase tracking-wider text-zinc-500 bg-zinc-100 border border-zinc-200 rounded px-1.5 py-0.5"
             >
-              {t("tableNewOnlyBadge")} · {t("tableNewOnlyAction")}
+              {t("tableNewOnlyBadge")}
             </span>
           )}
 

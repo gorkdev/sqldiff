@@ -3,7 +3,6 @@ import { splitTupleValues } from "./parser";
 
 export type WriteOptions = {
   tables: Set<string>;
-  dropTables?: Set<string>;
   updateOverrides?: Map<string, Map<string, Set<string>>>;
   excludeMissing?: Map<string, Set<string>>;
   maxRowsPerInsert?: number;
@@ -27,7 +26,6 @@ export function writeSyncSql(summary: DiffSummary, opts: WriteOptions): string {
   const maxBytes = opts.maxBytesPerInsert ?? DEFAULT_MAX_BYTES_PER_INSERT;
   const overrides =
     opts.updateOverrides ?? new Map<string, Map<string, Set<string>>>();
-  const dropTables = opts.dropTables ?? new Set<string>();
   const excludeMissing =
     opts.excludeMissing ?? new Map<string, Set<string>>();
 
@@ -44,14 +42,12 @@ export function writeSyncSql(summary: DiffSummary, opts: WriteOptions): string {
     (m) => nonEmptyRows(m) > 0
   );
 
-  // DDL section (DROP for new-only, DROP+CREATE for old-only)
+  // DDL section: DROP IF EXISTS + CREATE for selected old-only tables.
+  // New-only tables are left untouched on the target.
   const oldOnlyTables = summary.tables.filter(
     (t) => t.status === "old-only" && opts.tables.has(t.table)
   );
-  const newOnlyDrops = summary.tables.filter(
-    (t) => t.status === "new-only" && dropTables.has(t.table)
-  );
-  const hasDdl = oldOnlyTables.length > 0 || newOnlyDrops.length > 0;
+  const hasDdl = oldOnlyTables.length > 0;
 
   // DML tables: common + old-only that are selected, with at least one effective
   // missing row (after applying excludeMissing) or any selected revert.
@@ -80,11 +76,6 @@ export function writeSyncSql(summary: DiffSummary, opts: WriteOptions): string {
       `-- DDL create: ${oldOnlyTables.map((t) => t.table).join(", ")}`
     );
   }
-  if (newOnlyDrops.length > 0) {
-    lines.push(
-      `-- DDL drop: ${newOnlyDrops.map((t) => t.table).join(", ")}`
-    );
-  }
   lines.push("");
   lines.push("SET NAMES utf8mb4;");
   lines.push("SET @OLD_SQL_MODE = @@SQL_MODE;");
@@ -94,9 +85,6 @@ export function writeSyncSql(summary: DiffSummary, opts: WriteOptions): string {
   if (hasDdl) {
     lines.push("");
     lines.push("-- DDL (auto-commits per statement, kept outside transaction)");
-    for (const t of newOnlyDrops) {
-      lines.push(`DROP TABLE IF EXISTS ${quoteIdent(t.table)};`);
-    }
     for (const t of oldOnlyTables) {
       lines.push(`DROP TABLE IF EXISTS ${quoteIdent(t.table)};`);
       if (t.createSql && t.createSql.trim().length > 0) {

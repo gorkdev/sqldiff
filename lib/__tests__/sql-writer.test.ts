@@ -425,25 +425,14 @@ describe("writeSyncSql — missing-only mode", () => {
       expect(sql).not.toContain("INSERT IGNORE INTO `x`");
     });
 
-    it("emits DROP for new-only table when listed in dropTables", () => {
-      const t = newOnlyTable("extra_t", ["id"], ["id"], [["1"]]);
-      const sql = writeSyncSql(summary([t]), {
-        tables: new Set(),
-        dropTables: new Set(["extra_t"]),
-      });
-
-      expect(sql).toContain("DROP TABLE IF EXISTS `extra_t`;");
-      expect(sql).toMatch(/-- DDL drop: extra_t/);
-    });
-
-    it("does NOT emit DROP for new-only table when not in dropTables", () => {
+    it("never emits DROP for new-only tables (kept untouched)", () => {
       const t = newOnlyTable("extra_t", ["id"], ["id"], [["1"]]);
       const sql = writeSyncSql(summary([t]), {
         tables: new Set(["extra_t"]),
-        dropTables: new Set(),
       });
 
       expect(sql).not.toContain("DROP TABLE IF EXISTS `extra_t`");
+      expect(sql).not.toContain("INSERT IGNORE INTO `extra_t`");
     });
 
     it("keeps DDL outside the transaction wrapper", () => {
@@ -498,12 +487,10 @@ describe("writeSyncSql — missing-only mode", () => {
       expect(sql).not.toContain("INSERT IGNORE INTO `posts`");
     });
 
-    it("mode header includes 'DDL' when any DDL is emitted", () => {
-      const t = newOnlyTable("e", ["id"], ["id"], [["1"]]);
-      const sql = writeSyncSql(summary([t]), {
-        tables: new Set(),
-        dropTables: new Set(["e"]),
-      });
+    it("mode header includes 'DDL' when CREATE is emitted", () => {
+      const create = `CREATE TABLE \`m\` (\`id\` int NOT NULL, PRIMARY KEY (\`id\`)) ENGINE=InnoDB`;
+      const t = oldOnlyTable("m", ["id"], ["id"], [], create);
+      const sql = writeSyncSql(summary([t]), { tables: new Set(["m"]) });
 
       expect(sql).toMatch(/-- mode: missing-only \+ DDL/);
     });
