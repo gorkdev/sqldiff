@@ -3,7 +3,9 @@ import { splitTupleValues } from "./parser";
 
 export type WriteOptions = {
   tables: Set<string>;
+  dropTables?: Set<string>;
   updateOverrides?: Map<string, Map<string, Set<string>>>;
+  excludeMissing?: Map<string, Set<string>>;
   maxRowsPerInsert?: number;
   maxBytesPerInsert?: number;
 };
@@ -25,50 +27,116 @@ export function writeSyncSql(summary: DiffSummary, opts: WriteOptions): string {
   const maxBytes = opts.maxBytesPerInsert ?? DEFAULT_MAX_BYTES_PER_INSERT;
   const overrides =
     opts.updateOverrides ?? new Map<string, Map<string, Set<string>>>();
+  const dropTables = opts.dropTables ?? new Set<string>();
+  const excludeMissing =
+    opts.excludeMissing ?? new Map<string, Set<string>>();
+
+  const effectiveMissingCount = (t: TableDiff): number => {
+    const excl = excludeMissing.get(t.table);
+    if (!excl || excl.size === 0) return t.deletes.length;
+    let n = 0;
+    for (const change of t.deletes) {
+      if (!excl.has(pkKey(change.pkValues))) n++;
+    }
+    return n;
+  };
   const hasAnyRevert = Array.from(overrides.values()).some(
     (m) => nonEmptyRows(m) > 0
   );
 
-  const lines: string[] = [];
-  const tables = summary.tables.filter((t) => {
+  // DDL section (DROP for new-only, DROP+CREATE for old-only)
+  const oldOnlyTables = summary.tables.filter(
+    (t) => t.status === "old-only" && opts.tables.has(t.table)
+  );
+  const newOnlyDrops = summary.tables.filter(
+    (t) => t.status === "new-only" && dropTables.has(t.table)
+  );
+  const hasDdl = oldOnlyTables.length > 0 || newOnlyDrops.length > 0;
+
+  // DML tables: common + old-only that are selected, with at least one effective
+  // missing row (after applying excludeMissing) or any selected revert.
+  const dmlTables = summary.tables.filter((t) => {
+    if (t.status === "new-only") return false;
     if (!opts.tables.has(t.table)) return false;
-    const hasMissing = t.deletes.length > 0;
+    const hasMissing = effectiveMissingCount(t) > 0;
     const hasReverts = nonEmptyRows(overrides.get(t.table)) > 0;
     return hasMissing || hasReverts;
   });
 
+  const modeParts = ["missing-only"];
+  if (hasAnyRevert) modeParts.push("manual reverts");
+  if (hasDdl) modeParts.push("DDL");
+
+  const lines: string[] = [];
   lines.push(`-- sqldiff sync · ${summary.generatedAt}`);
-  lines.push(
-    `-- mode: missing-only${hasAnyRevert ? " + manual reverts" : ""}`
-  );
+  lines.push(`-- mode: ${modeParts.join(" + ")}`);
   lines.push(`-- source: ${summary.oldFileName} (${formatBytes(summary.oldFileSize)})`);
   lines.push(`-- target: ${summary.newFileName} (${formatBytes(summary.newFileSize)})`);
-  lines.push(`-- tables included: ${tables.map((t) => t.table).join(", ") || "(none)"}`);
+  lines.push(
+    `-- tables included: ${dmlTables.map((t) => t.table).join(", ") || "(none)"}`
+  );
+  if (oldOnlyTables.length > 0) {
+    lines.push(
+      `-- DDL create: ${oldOnlyTables.map((t) => t.table).join(", ")}`
+    );
+  }
+  if (newOnlyDrops.length > 0) {
+    lines.push(
+      `-- DDL drop: ${newOnlyDrops.map((t) => t.table).join(", ")}`
+    );
+  }
   lines.push("");
   lines.push("SET NAMES utf8mb4;");
   lines.push("SET @OLD_SQL_MODE = @@SQL_MODE;");
   lines.push("SET SQL_MODE = 'NO_AUTO_VALUE_ON_ZERO';");
   lines.push("SET FOREIGN_KEY_CHECKS = 0;");
+
+  if (hasDdl) {
+    lines.push("");
+    lines.push("-- DDL (auto-commits per statement, kept outside transaction)");
+    for (const t of newOnlyDrops) {
+      lines.push(`DROP TABLE IF EXISTS ${quoteIdent(t.table)};`);
+    }
+    for (const t of oldOnlyTables) {
+      lines.push(`DROP TABLE IF EXISTS ${quoteIdent(t.table)};`);
+      if (t.createSql && t.createSql.trim().length > 0) {
+        const ddl = t.createSql.trim();
+        lines.push(ddl.endsWith(";") ? ddl : ddl + ";");
+      } else {
+        lines.push(
+          `-- WARNING: missing CREATE TABLE source for \`${t.table}\`; cannot recreate.`
+        );
+      }
+    }
+    lines.push("");
+  }
+
   lines.push("START TRANSACTION;");
   lines.push("");
 
-  for (const table of tables) {
+  for (const table of dmlTables) {
     const reverts = overrides.get(table.table);
     const revertRowCount = nonEmptyRows(reverts);
-    const missingCount = table.deletes.length;
+    const excluded = excludeMissing.get(table.table);
+    const emittedMissing = effectiveMissingCount(table);
+    const totalMissing = table.deletes.length;
+    const missingLabel =
+      excluded && excluded.size > 0
+        ? `${emittedMissing} of ${totalMissing} missing`
+        : `${totalMissing} missing`;
 
     lines.push(
-      `-- ${table.table}: ${missingCount} missing` +
+      `-- ${table.table}: ${missingLabel}` +
         (revertRowCount > 0 ? `, ${revertRowCount} reverted to OLD` : "")
     );
 
-    if (table.pkColumns.length === 0 && missingCount > 0) {
+    if (table.pkColumns.length === 0 && emittedMissing > 0) {
       lines.push(
         `-- WARNING: no primary key detected for \`${table.table}\` — INSERT IGNORE cannot de-duplicate against the target.`
       );
     }
 
-    for (const statement of batchedInserts(table, maxRows, maxBytes)) {
+    for (const statement of batchedInserts(table, maxRows, maxBytes, excluded)) {
       lines.push(statement);
     }
 
@@ -126,11 +194,18 @@ function updateRevertSql(
 function* batchedInserts(
   table: TableDiff,
   maxRows: number,
-  maxBytes: number
+  maxBytes: number,
+  excluded?: Set<string>
 ): Generator<string> {
   if (table.deletes.length === 0) return;
 
-  const firstRow = table.deletes[0].oldRow;
+  // Build the included list first; bail if everything is excluded.
+  const included = excluded && excluded.size > 0
+    ? table.deletes.filter((c) => !excluded.has(pkKey(c.pkValues)))
+    : table.deletes;
+  if (included.length === 0) return;
+
+  const firstRow = included[0].oldRow;
   if (!firstRow) throw new Error(`missing oldRow in delete change for ${table.table}`);
   const cols = firstRow.columns.length ? firstRow.columns : table.columns;
   const colList = cols.map(quoteIdent).join(",");
@@ -141,7 +216,7 @@ function* batchedInserts(
   let tuples: string[] = [];
   let bytes = overhead;
 
-  for (const change of table.deletes) {
+  for (const change of included) {
     const row = change.oldRow;
     if (!row) throw new Error(`missing oldRow in delete change for ${table.table}`);
     const tuple = `(${row.values})`;

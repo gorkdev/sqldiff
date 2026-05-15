@@ -36,7 +36,12 @@ export async function parseDump(
   let rowsSeen = 0;
   let currentTable: string | null = null;
 
-  let inCreate: { name: string; columns: string[]; pkColumns: string[] } | null = null;
+  let inCreate: {
+    name: string;
+    columns: string[];
+    pkColumns: string[];
+    rawLines: string[];
+  } | null = null;
   let inInsert: { tableName: string; explicitColumns: string[] | null; buffer: string } | null = null;
   let inAlter: { tableName: string; buffer: string } | null = null;
 
@@ -139,6 +144,7 @@ export async function parseDump(
     }
 
     if (inCreate) {
+      inCreate.rawLines.push(line);
       if (TABLE_END_RE.test(line)) {
         tableMeta.set(inCreate.name, {
           columns: inCreate.columns,
@@ -149,6 +155,7 @@ export async function parseDump(
           columns: inCreate.columns,
           pkColumns: inCreate.pkColumns,
           rows: new Map(),
+          createSql: inCreate.rawLines.join("\n"),
         });
         inCreate = null;
         continue;
@@ -172,7 +179,12 @@ export async function parseDump(
 
     const createMatch = line.match(CREATE_TABLE_RE);
     if (createMatch) {
-      inCreate = { name: createMatch[1], columns: [], pkColumns: [] };
+      inCreate = {
+        name: createMatch[1],
+        columns: [],
+        pkColumns: [],
+        rawLines: [line],
+      };
       currentTable = createMatch[1];
       reportProgress(true);
       continue;

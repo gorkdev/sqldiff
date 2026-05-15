@@ -52,6 +52,8 @@ function serializeJob(job: ReturnType<typeof getJob>) {
             table: t.table,
             columns: t.columns,
             pkColumns: t.pkColumns,
+            status: t.status,
+            createSql: t.createSql,
             insertCount: t.inserts.length,
             updateCount: t.updates.length,
             deleteCount: t.deletes.length,

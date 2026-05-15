@@ -5,6 +5,7 @@ import { DiffRow, type SerializedTable } from "./DiffRow";
 import { useLocale } from "@/lib/i18n";
 
 const EMPTY_ROWS: Map<string, Set<string>> = new Map();
+const EMPTY_SET: Set<string> = new Set();
 
 export type DiffSummaryDto = {
   oldFileName: string;
@@ -24,16 +25,33 @@ export function DiffTableList({ jobId, summary }: Props) {
   const { t } = useLocale();
 
   const actionableTables = useMemo(
-    () => summary.tables.filter((t) => t.deleteCount > 0),
+    () =>
+      summary.tables.filter(
+        (t) => t.deleteCount > 0 || t.status === "old-only"
+      ),
     [summary.tables]
   );
 
+  // Default-selected: common tables with missing rows, AND old-only tables (CREATE+import).
+  // NEW-only tables are NOT selected by default (DROP is destructive).
   const [selected, setSelected] = useState<Set<string>>(
-    () => new Set(actionableTables.map((t) => t.table))
+    () =>
+      new Set(
+        summary.tables
+          .filter(
+            (t) =>
+              t.status === "old-only" ||
+              (t.status === "common" && t.deleteCount > 0)
+          )
+          .map((t) => t.table)
+      )
   );
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const [cellReverts, setCellReverts] = useState<
     Map<string, Map<string, Set<string>>>
+  >(new Map());
+  const [missingExcluded, setMissingExcluded] = useState<
+    Map<string, Set<string>>
   >(new Map());
   const [downloading, setDownloading] = useState(false);
 
@@ -46,14 +64,20 @@ export function DiffTableList({ jobId, summary }: Props) {
     let n = 0;
     for (const tbl of summary.tables) {
       if (!selected.has(tbl.table)) continue;
-      n += tbl.deleteCount;
+      if (tbl.status === "new-only") {
+        n += 1;
+        continue;
+      }
+      const excluded = missingExcluded.get(tbl.table)?.size ?? 0;
+      n += Math.max(0, tbl.deleteCount - excluded);
+      if (tbl.status === "old-only") n += 1;
       const rows = cellReverts.get(tbl.table);
       if (rows) {
         for (const cols of rows.values()) if (cols.size > 0) n++;
       }
     }
     return n;
-  }, [selected, cellReverts, summary.tables]);
+  }, [selected, cellReverts, missingExcluded, summary.tables]);
 
   const toggleSelect = (table: string) => {
     setSelected((prev) => {
@@ -69,6 +93,18 @@ export function DiffTableList({ jobId, summary }: Props) {
       const next = new Set(prev);
       if (next.has(table)) next.delete(table);
       else next.add(table);
+      return next;
+    });
+  };
+
+  const toggleMissingRow = (table: string, pk: string) => {
+    setMissingExcluded((prev) => {
+      const next = new Map(prev);
+      const cur = new Set(next.get(table) ?? []);
+      if (cur.has(pk)) cur.delete(pk);
+      else cur.add(pk);
+      if (cur.size === 0) next.delete(table);
+      else next.set(table, cur);
       return next;
     });
   };
@@ -99,6 +135,7 @@ export function DiffTableList({ jobId, summary }: Props) {
   const clearAll = () => {
     setSelected(new Set());
     setCellReverts(new Map());
+    setMissingExcluded(new Map());
   };
 
   const download = async () => {
@@ -113,12 +150,26 @@ export function DiffTableList({ jobId, summary }: Props) {
         }
         if (Object.keys(tableObj).length > 0) overrides[table] = tableObj;
       }
+      const sqlTables: string[] = [];
+      const dropTables: string[] = [];
+      for (const tbl of summary.tables) {
+        if (!selected.has(tbl.table)) continue;
+        if (tbl.status === "new-only") dropTables.push(tbl.table);
+        else sqlTables.push(tbl.table);
+      }
+      const excludeMissing: Record<string, string[]> = {};
+      for (const [table, keys] of missingExcluded) {
+        if (!selected.has(table)) continue;
+        if (keys.size > 0) excludeMissing[table] = Array.from(keys);
+      }
       const res = await fetch(`/api/jobs/${jobId}/sql`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          tables: Array.from(selected),
+          tables: sqlTables,
+          dropTables,
           updateOverrides: overrides,
+          excludeMissing,
         }),
       });
       if (!res.ok) {
@@ -176,9 +227,11 @@ export function DiffTableList({ jobId, summary }: Props) {
             selected={selected.has(tbl.table)}
             expanded={expanded.has(tbl.table)}
             cellReverts={cellReverts.get(tbl.table) ?? EMPTY_ROWS}
+            missingExcluded={missingExcluded.get(tbl.table) ?? EMPTY_SET}
             onToggleSelect={() => toggleSelect(tbl.table)}
             onToggleExpand={() => toggleExpand(tbl.table)}
             onToggleCell={(pk, col) => toggleCellRevert(tbl.table, pk, col)}
+            onToggleMissingRow={(pk) => toggleMissingRow(tbl.table, pk)}
           />
         ))}
       </ul>

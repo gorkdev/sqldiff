@@ -18,19 +18,23 @@ export async function POST(
 
   const body = await request.json().catch(() => ({}));
   const tables: string[] = Array.isArray(body?.tables) ? body.tables : [];
+  const drops: string[] = Array.isArray(body?.dropTables) ? body.dropTables : [];
   const rawOverrides: unknown = body?.updateOverrides;
   const updateOverrides = parseUpdateOverrides(rawOverrides);
+  const excludeMissing = parseExclude(body?.excludeMissing);
   const hasReverts = Array.from(updateOverrides.values()).some(
     (rows) => Array.from(rows.values()).some((s) => s.size > 0)
   );
 
-  if (tables.length === 0 && !hasReverts) {
+  if (tables.length === 0 && drops.length === 0 && !hasReverts) {
     return Response.json({ error: "Select at least one table" }, { status: 400 });
   }
 
   const sql = writeSyncSql(job.summary, {
     tables: new Set(tables),
+    dropTables: new Set(drops),
     updateOverrides,
+    excludeMissing,
   });
 
   return new Response(sql, {
@@ -40,6 +44,18 @@ export async function POST(
       "Content-Disposition": `attachment; filename="sync-${id.slice(0, 8)}.sql"`,
     },
   });
+}
+
+function parseExclude(raw: unknown): Map<string, Set<string>> {
+  const out = new Map<string, Set<string>>();
+  if (!raw || typeof raw !== "object") return out;
+  for (const [table, keys] of Object.entries(raw as Record<string, unknown>)) {
+    if (!Array.isArray(keys)) continue;
+    const set = new Set<string>();
+    for (const k of keys) if (typeof k === "string") set.add(k);
+    if (set.size > 0) out.set(table, set);
+  }
+  return out;
 }
 
 function parseUpdateOverrides(

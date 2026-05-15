@@ -214,4 +214,26 @@ INSERT INTO \`t\` VALUES (1);
     const snap = await parseDump(path);
     expect(snap.get("t")!.rows.size).toBe(1);
   });
+
+  it("captures the raw CREATE TABLE block as createSql", async () => {
+    const path = await dump(
+      "createsql",
+      `CREATE TABLE \`posts\` (
+  \`id\` int NOT NULL AUTO_INCREMENT,
+  \`title\` varchar(255) NOT NULL,
+  \`body\` text,
+  PRIMARY KEY (\`id\`),
+  KEY \`idx_title\` (\`title\`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+`
+    );
+    const snap = await parseDump(path);
+    const t = snap.get("posts")!;
+    expect(t.createSql).toBeDefined();
+    expect(t.createSql).toContain("CREATE TABLE `posts`");
+    expect(t.createSql).toContain("AUTO_INCREMENT");
+    expect(t.createSql).toContain("PRIMARY KEY (`id`)");
+    expect(t.createSql).toContain("KEY `idx_title`");
+    expect(t.createSql).toContain("ENGINE=InnoDB");
+  });
 });

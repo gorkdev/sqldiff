@@ -14,6 +14,7 @@ export type TableSnapshot = {
   columns: string[];
   pkColumns: string[];
   rows: Map<RowKey, RowData>;
+  createSql?: string;
 };
 
 export type DumpSnapshot = Map<string, TableSnapshot>;
@@ -27,6 +28,8 @@ export type RowChange = {
   newRow?: RowData;
 };
 
+export type TableStatus = "common" | "old-only" | "new-only";
+
 export type TableDiff = {
   table: string;
   columns: string[];
@@ -34,6 +37,8 @@ export type TableDiff = {
   inserts: RowChange[];
   updates: RowChange[];
   deletes: RowChange[];
+  status: TableStatus;
+  createSql?: string;
 };
 
 export type DiffSummary = {

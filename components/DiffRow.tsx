@@ -18,10 +18,14 @@ export type SamplePreview = {
   cellDiffs?: CellDiff[];
 };
 
+export type TableStatus = "common" | "old-only" | "new-only";
+
 export type SerializedTable = {
   table: string;
   columns: string[];
   pkColumns: string[];
+  status: TableStatus;
+  createSql?: string;
   insertCount: number;
   updateCount: number;
   deleteCount: number;
@@ -37,9 +41,11 @@ type Props = {
   selected: boolean;
   expanded: boolean;
   cellReverts: Map<string, Set<string>>;
+  missingExcluded: Set<string>;
   onToggleSelect: () => void;
   onToggleExpand: () => void;
   onToggleCell: (pkKey: string, column: string) => void;
+  onToggleMissingRow: (pkKey: string) => void;
 };
 
 const pkKey = (pkValues: string[]): string => JSON.stringify(pkValues);
@@ -49,9 +55,11 @@ export function DiffRow({
   selected,
   expanded,
   cellReverts,
+  missingExcluded,
   onToggleSelect,
   onToggleExpand,
   onToggleCell,
+  onToggleMissingRow,
 }: Props) {
   const { t } = useLocale();
   const missing = table.deleteCount;
@@ -68,7 +76,10 @@ export function DiffRow({
   }
 
   const hasAnyDiff = missing + extra + changed > 0;
-  const actionable = missing > 0 || revertedRows > 0;
+  const isOldOnly = table.status === "old-only";
+  const isNewOnly = table.status === "new-only";
+  const actionable =
+    isOldOnly || isNewOnly || missing > 0 || revertedRows > 0;
   const noPk = table.pkColumns.length === 0;
 
   return (
@@ -79,7 +90,16 @@ export function DiffRow({
           checked={selected && actionable}
           disabled={!actionable}
           onChange={onToggleSelect}
-          className="h-4 w-4 accent-emerald-600 disabled:opacity-30"
+          title={
+            isOldOnly
+              ? t("tableOldOnlyTip")
+              : isNewOnly
+              ? t("tableNewOnlyTip")
+              : undefined
+          }
+          className={`h-4 w-4 disabled:opacity-30 ${
+            isNewOnly ? "accent-rose-600" : "accent-emerald-600"
+          }`}
           aria-label={`Select ${table.table}`}
         />
 
@@ -94,7 +114,25 @@ export function DiffRow({
             {table.table}
           </span>
 
-          {noPk && missing > 0 && (
+          {isOldOnly && (
+            <span
+              title={t("tableOldOnlyTip")}
+              className="text-[10px] uppercase tracking-wider text-emerald-700 bg-emerald-50 border border-emerald-200 rounded px-1.5 py-0.5"
+            >
+              {t("tableOldOnlyBadge")} ·{" "}
+              {missing > 0 ? t("tableOldOnlyAction") : t("tableOldOnlySchemaOnly")}
+            </span>
+          )}
+          {isNewOnly && (
+            <span
+              title={t("tableNewOnlyTip")}
+              className="text-[10px] uppercase tracking-wider text-rose-700 bg-rose-50 border border-rose-200 rounded px-1.5 py-0.5"
+            >
+              {t("tableNewOnlyBadge")} · {t("tableNewOnlyAction")}
+            </span>
+          )}
+
+          {noPk && missing > 0 && !isOldOnly && (
             <span
               title={t("noPkTip")}
               className="text-[10px] uppercase tracking-wider text-amber-600"
@@ -152,15 +190,16 @@ export function DiffRow({
       {expanded && hasAnyDiff && (
         <div className="bg-zinc-50/70 border-t border-zinc-100 px-4 py-3 space-y-4">
           {missing > 0 && (
-            <PreviewSection
+            <MissingSection
               label={t("catMissing")}
               help={t("missingHelp")}
-              accent="text-emerald-600"
               samples={table.samples.deletes}
               total={missing}
               moreWord={t("more")}
               showAllLabel={t("showAll")}
               showLessLabel={t("showLess")}
+              missingExcluded={missingExcluded}
+              onToggleRow={onToggleMissingRow}
             />
           )}
           {changed > 0 && (
@@ -196,6 +235,85 @@ export function DiffRow({
         </div>
       )}
     </li>
+  );
+}
+
+function MissingSection({
+  label,
+  help,
+  samples,
+  total,
+  moreWord,
+  showAllLabel,
+  showLessLabel,
+  missingExcluded,
+  onToggleRow,
+}: {
+  label: string;
+  help: string;
+  samples: SamplePreview[];
+  total: number;
+  moreWord: string;
+  showAllLabel: string;
+  showLessLabel: string;
+  missingExcluded: Set<string>;
+  onToggleRow: (pkKey: string) => void;
+}) {
+  const [showAll, setShowAll] = useState(false);
+  const visible = showAll ? samples : samples.slice(0, DEFAULT_VISIBLE);
+  const hidden = samples.length - visible.length;
+  const includedCount = Math.max(0, total - missingExcluded.size);
+  return (
+    <div>
+      <div className="flex items-baseline gap-2 mb-1.5">
+        <span className="text-[10px] uppercase tracking-wider text-emerald-600">
+          {label} ({includedCount}/{total})
+        </span>
+        <span className="text-[10px] text-zinc-400">{help}</span>
+      </div>
+      <div className="font-mono text-xs text-zinc-700 space-y-1 leading-relaxed">
+        {visible.map((s, i) => {
+          const key = pkKey(s.pkValues);
+          const included = !missingExcluded.has(key);
+          return (
+            <label
+              key={i}
+              className={`
+                flex items-start gap-2 rounded border px-2.5 py-1.5
+                whitespace-pre-wrap break-all cursor-pointer
+                ${included ? "border-zinc-200 bg-white" : "border-zinc-200 bg-zinc-100 opacity-60"}
+              `}
+            >
+              <input
+                type="checkbox"
+                checked={included}
+                onChange={() => onToggleRow(key)}
+                className="mt-0.5 h-3.5 w-3.5 accent-emerald-600 shrink-0"
+              />
+              <span className="min-w-0 flex-1">{s.preview}</span>
+            </label>
+          );
+        })}
+        {hidden > 0 && (
+          <button
+            type="button"
+            onClick={() => setShowAll(true)}
+            className="text-left text-zinc-500 hover:text-zinc-900 underline decoration-dotted"
+          >
+            … +{hidden} {moreWord} · {showAllLabel}
+          </button>
+        )}
+        {showAll && samples.length > DEFAULT_VISIBLE && (
+          <button
+            type="button"
+            onClick={() => setShowAll(false)}
+            className="text-left text-zinc-500 hover:text-zinc-900 underline decoration-dotted"
+          >
+            ↑ {showLessLabel}
+          </button>
+        )}
+      </div>
+    </div>
   );
 }
 

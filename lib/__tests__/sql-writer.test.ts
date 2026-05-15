@@ -42,6 +42,7 @@ function table(name: string, columns: string[], pkColumns: string[], opts: {
       pkValues: pkColumns.map((pk) => v[columns.indexOf(pk)] ?? ""),
       oldRow: row(v, columns, pkColumns),
     })),
+    status: "common" as const,
   };
 }
 
@@ -374,6 +375,137 @@ describe("writeSyncSql — missing-only mode", () => {
       });
 
       expect(sql).toMatch(/-- mode: missing-only \+ manual reverts/);
+    });
+  });
+
+  describe("DDL — old-only and new-only tables", () => {
+    const oldOnlyTable = (
+      name: string,
+      cols: string[],
+      pkCols: string[],
+      rows: string[][],
+      createSql: string
+    ): TableDiff => {
+      const t = table(name, cols, pkCols, { oldOnly: rows });
+      return { ...t, status: "old-only", createSql };
+    };
+
+    const newOnlyTable = (
+      name: string,
+      cols: string[],
+      pkCols: string[],
+      rows: string[][]
+    ): TableDiff => {
+      const t = table(name, cols, pkCols, { newOnly: rows });
+      return { ...t, status: "new-only" };
+    };
+
+    it("emits DROP IF EXISTS + CREATE for selected old-only table", () => {
+      const create = `CREATE TABLE \`missing_t\` (\n  \`id\` int NOT NULL,\n  PRIMARY KEY (\`id\`)\n) ENGINE=InnoDB`;
+      const t = oldOnlyTable("missing_t", ["id"], ["id"], [["1"], ["2"]], create);
+      const sql = writeSyncSql(summary([t]), {
+        tables: new Set(["missing_t"]),
+      });
+
+      expect(sql).toContain("DROP TABLE IF EXISTS `missing_t`;");
+      expect(sql).toContain("CREATE TABLE `missing_t`");
+      expect(sql).toMatch(/-- DDL create: missing_t/);
+      // Followed by INSERT IGNOREs for its rows
+      expect(sql).toContain(
+        "INSERT IGNORE INTO `missing_t` (`id`) VALUES (1),(2);"
+      );
+    });
+
+    it("does NOT emit CREATE for unselected old-only table", () => {
+      const create = `CREATE TABLE \`x\` (\`id\` int NOT NULL, PRIMARY KEY (\`id\`)) ENGINE=InnoDB`;
+      const t = oldOnlyTable("x", ["id"], ["id"], [["1"]], create);
+      const sql = writeSyncSql(summary([t]), { tables: new Set() });
+
+      expect(sql).not.toContain("CREATE TABLE `x`");
+      expect(sql).not.toContain("INSERT IGNORE INTO `x`");
+    });
+
+    it("emits DROP for new-only table when listed in dropTables", () => {
+      const t = newOnlyTable("extra_t", ["id"], ["id"], [["1"]]);
+      const sql = writeSyncSql(summary([t]), {
+        tables: new Set(),
+        dropTables: new Set(["extra_t"]),
+      });
+
+      expect(sql).toContain("DROP TABLE IF EXISTS `extra_t`;");
+      expect(sql).toMatch(/-- DDL drop: extra_t/);
+    });
+
+    it("does NOT emit DROP for new-only table when not in dropTables", () => {
+      const t = newOnlyTable("extra_t", ["id"], ["id"], [["1"]]);
+      const sql = writeSyncSql(summary([t]), {
+        tables: new Set(["extra_t"]),
+        dropTables: new Set(),
+      });
+
+      expect(sql).not.toContain("DROP TABLE IF EXISTS `extra_t`");
+    });
+
+    it("keeps DDL outside the transaction wrapper", () => {
+      const create = `CREATE TABLE \`m\` (\`id\` int NOT NULL, PRIMARY KEY (\`id\`)) ENGINE=InnoDB`;
+      const t = oldOnlyTable("m", ["id"], ["id"], [], create);
+      const sql = writeSyncSql(summary([t]), { tables: new Set(["m"]) });
+
+      const ddlPos = sql.indexOf("CREATE TABLE `m`");
+      const startTx = sql.indexOf("START TRANSACTION;");
+      expect(ddlPos).toBeGreaterThan(-1);
+      expect(startTx).toBeGreaterThan(ddlPos);
+    });
+
+    it("emits warning when old-only table has no captured createSql", () => {
+      const t = oldOnlyTable("legacy", ["id"], ["id"], [["1"]], "");
+      const sql = writeSyncSql(summary([t]), { tables: new Set(["legacy"]) });
+
+      expect(sql).toMatch(/-- WARNING: missing CREATE TABLE.*legacy/);
+      // Still tries to DROP IF EXISTS + INSERT (will fail at runtime but explicit)
+      expect(sql).toContain("DROP TABLE IF EXISTS `legacy`;");
+    });
+
+    it("excludeMissing omits specified rows from INSERT IGNORE", () => {
+      const t = table("posts", ["id", "title"], ["id"], {
+        oldOnly: [["1", "'A'"], ["2", "'B'"], ["3", "'C'"]],
+      });
+      const sql = writeSyncSql(summary([t]), {
+        tables: new Set(["posts"]),
+        excludeMissing: new Map([
+          ["posts", new Set([pkKey(["2"])])],
+        ]),
+      });
+
+      expect(sql).toContain("(1,'A')");
+      expect(sql).toContain("(3,'C')");
+      expect(sql).not.toContain("(2,'B')");
+      // Comment reflects partial selection
+      expect(sql).toMatch(/-- posts: 2 of 3 missing/);
+    });
+
+    it("excludeMissing covering all rows produces no INSERT for that table", () => {
+      const t = table("posts", ["id"], ["id"], {
+        oldOnly: [["1"], ["2"]],
+      });
+      const sql = writeSyncSql(summary([t]), {
+        tables: new Set(["posts"]),
+        excludeMissing: new Map([
+          ["posts", new Set([pkKey(["1"]), pkKey(["2"])])],
+        ]),
+      });
+
+      expect(sql).not.toContain("INSERT IGNORE INTO `posts`");
+    });
+
+    it("mode header includes 'DDL' when any DDL is emitted", () => {
+      const t = newOnlyTable("e", ["id"], ["id"], [["1"]]);
+      const sql = writeSyncSql(summary([t]), {
+        tables: new Set(),
+        dropTables: new Set(["e"]),
+      });
+
+      expect(sql).toMatch(/-- mode: missing-only \+ DDL/);
     });
   });
 

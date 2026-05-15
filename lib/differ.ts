@@ -53,6 +53,7 @@ function diffTable(oldTable: TableSnapshot, newTable: TableSnapshot): TableDiff 
     inserts,
     updates,
     deletes,
+    status: "common",
   };
 }
 
@@ -68,6 +69,7 @@ function makeNewTable(table: TableSnapshot): TableDiff {
     inserts,
     updates: [],
     deletes: [],
+    status: "new-only",
   };
 }
 
@@ -83,6 +85,8 @@ function makeDroppedTable(table: TableSnapshot): TableDiff {
     inserts: [],
     updates: [],
     deletes,
+    status: "old-only",
+    createSql: table.createSql,
   };
 }
 
