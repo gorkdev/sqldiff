@@ -28,7 +28,10 @@ export default function RootLayout({
       lang="tr"
       className={`${geistSans.variable} ${geistMono.variable} h-full antialiased`}
     >
-      <body className="min-h-full bg-white text-zinc-900 font-sans">
+      <body
+        className="min-h-full bg-white text-zinc-900 font-sans"
+        suppressHydrationWarning
+      >
         <LocaleProvider>{children}</LocaleProvider>
       </body>
     </html>

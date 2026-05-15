@@ -298,7 +298,7 @@ function skipDoubleQuoted(s: string, start: number): number {
   return n;
 }
 
-function splitTupleValues(content: string): string[] {
+export function splitTupleValues(content: string): string[] {
   const out: string[] = [];
   let buf = "";
   let i = 0;

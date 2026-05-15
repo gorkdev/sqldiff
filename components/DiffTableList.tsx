@@ -4,6 +4,8 @@ import { useMemo, useState } from "react";
 import { DiffRow, type SerializedTable } from "./DiffRow";
 import { useLocale } from "@/lib/i18n";
 
+const EMPTY_ROWS: Map<string, Set<string>> = new Map();
+
 export type DiffSummaryDto = {
   oldFileName: string;
   newFileName: string;
@@ -21,8 +23,6 @@ type Props = {
 export function DiffTableList({ jobId, summary }: Props) {
   const { t } = useLocale();
 
-  // Only "missing" rows (deleteCount = OLD-only) are emitted in missing-only mode.
-  // Tables without any missing rows cannot be acted on.
   const actionableTables = useMemo(
     () => summary.tables.filter((t) => t.deleteCount > 0),
     [summary.tables]
@@ -32,6 +32,9 @@ export function DiffTableList({ jobId, summary }: Props) {
     () => new Set(actionableTables.map((t) => t.table))
   );
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
+  const [cellReverts, setCellReverts] = useState<
+    Map<string, Map<string, Set<string>>>
+  >(new Map());
   const [downloading, setDownloading] = useState(false);
 
   const totalMissing = useMemo(
@@ -44,9 +47,13 @@ export function DiffTableList({ jobId, summary }: Props) {
     for (const tbl of summary.tables) {
       if (!selected.has(tbl.table)) continue;
       n += tbl.deleteCount;
+      const rows = cellReverts.get(tbl.table);
+      if (rows) {
+        for (const cols of rows.values()) if (cols.size > 0) n++;
+      }
     }
     return n;
-  }, [selected, summary.tables]);
+  }, [selected, cellReverts, summary.tables]);
 
   const toggleSelect = (table: string) => {
     setSelected((prev) => {
@@ -66,17 +73,53 @@ export function DiffTableList({ jobId, summary }: Props) {
     });
   };
 
+  const toggleCellRevert = (table: string, pk: string, col: string) => {
+    setCellReverts((prev) => {
+      const next = new Map(prev);
+      const rows = new Map(next.get(table) ?? []);
+      const cols = new Set(rows.get(pk) ?? []);
+      if (cols.has(col)) cols.delete(col);
+      else cols.add(col);
+      if (cols.size === 0) rows.delete(pk);
+      else rows.set(pk, cols);
+      if (rows.size === 0) next.delete(table);
+      else next.set(table, rows);
+      return next;
+    });
+    setSelected((prev) => {
+      if (prev.has(table)) return prev;
+      const next = new Set(prev);
+      next.add(table);
+      return next;
+    });
+  };
+
   const selectAll = () =>
     setSelected(new Set(actionableTables.map((t) => t.table)));
-  const clearAll = () => setSelected(new Set());
+  const clearAll = () => {
+    setSelected(new Set());
+    setCellReverts(new Map());
+  };
 
   const download = async () => {
     setDownloading(true);
     try {
+      const overrides: Record<string, Record<string, string[]>> = {};
+      for (const [table, rows] of cellReverts) {
+        if (!selected.has(table)) continue;
+        const tableObj: Record<string, string[]> = {};
+        for (const [pk, cols] of rows) {
+          if (cols.size > 0) tableObj[pk] = Array.from(cols);
+        }
+        if (Object.keys(tableObj).length > 0) overrides[table] = tableObj;
+      }
       const res = await fetch(`/api/jobs/${jobId}/sql`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ tables: Array.from(selected) }),
+        body: JSON.stringify({
+          tables: Array.from(selected),
+          updateOverrides: overrides,
+        }),
       });
       if (!res.ok) {
         const err = await res.json().catch(() => ({}));
@@ -125,10 +168,6 @@ export function DiffTableList({ jobId, summary }: Props) {
         </div>
       </header>
 
-      <div className="px-4 py-2 text-[11px] text-zinc-500 bg-zinc-50/60 border-b border-zinc-100">
-        {t("note")}
-      </div>
-
       <ul>
         {summary.tables.map((tbl) => (
           <DiffRow
@@ -136,8 +175,10 @@ export function DiffTableList({ jobId, summary }: Props) {
             table={tbl}
             selected={selected.has(tbl.table)}
             expanded={expanded.has(tbl.table)}
+            cellReverts={cellReverts.get(tbl.table) ?? EMPTY_ROWS}
             onToggleSelect={() => toggleSelect(tbl.table)}
             onToggleExpand={() => toggleExpand(tbl.table)}
+            onToggleCell={(pk, col) => toggleCellRevert(tbl.table, pk, col)}
           />
         ))}
       </ul>

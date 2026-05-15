@@ -87,8 +87,10 @@ INSERT INTO \`posts\` VALUES (1,'A'),(3,'C');`;
 
     const { sql } = await pipeline(oldPath, newPath);
 
-    expect(sql).toContain("INSERT IGNORE INTO `posts` (`id`,`title`) VALUES (2,'B');");
-    expect(sql).toContain("INSERT IGNORE INTO `posts` (`id`,`title`) VALUES (4,'D');");
+    // Multi-row batching collapses both missing rows into one INSERT.
+    expect(sql).toContain(
+      "INSERT IGNORE INTO `posts` (`id`,`title`) VALUES (2,'B'),(4,'D');"
+    );
     expect(sql).not.toContain("(1,'A')"); // exists in both
     expect(sql).not.toContain("(3,'C')"); // exists in both
   });

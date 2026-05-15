@@ -94,8 +94,13 @@ export default function Page() {
     };
   }, [jobId, t]);
 
+  const wide = job?.status === "done";
   return (
-    <main className="mx-auto max-w-3xl px-6 py-12 md:py-16">
+    <main
+      className={`mx-auto px-6 py-12 md:py-16 ${
+        wide ? "max-w-6xl" : "max-w-3xl"
+      }`}
+    >
       <header className="flex items-baseline justify-between mb-10">
         <div>
           <h1 className="font-mono text-lg font-medium tracking-tight text-zinc-900">

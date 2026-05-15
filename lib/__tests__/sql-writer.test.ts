@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { writeSyncSql } from "../sql-writer";
+import { writeSyncSql, pkKey } from "../sql-writer";
 import type { DiffSummary, RowData, TableDiff } from "../types";
 
 function row(values: string[], columns: string[], pkColumns: string[] = ["id"]): RowData {
@@ -76,7 +76,7 @@ describe("writeSyncSql — missing-only mode", () => {
     expect(sql).not.toMatch(/\bDELETE\b/);
   });
 
-  it("does NOT emit UPDATE statements (NEW is treated as authoritative)", () => {
+  it("does NOT emit UPDATE statements by default (no updateOverrides)", () => {
     const t = table("posts", ["id", "title"], ["id"], {
       changed: [{ oldValues: ["3", "'old'"], newValues: ["3", "'new'"] }],
     });
@@ -196,5 +196,201 @@ describe("writeSyncSql — missing-only mode", () => {
     expect(sql).toMatch(/-- mode: missing-only/);
     expect(sql).toMatch(/-- target: new\.sql/i);
     expect(sql).toMatch(/-- source: old\.sql/i);
+  });
+
+  it("emits SET NAMES utf8mb4 before the data block (phpMyAdmin charset safety)", () => {
+    const t = table("posts", ["id", "title"], ["id"], { oldOnly: [["1", "'A'"]] });
+    const sql = writeSyncSql(summary([t]), { tables: new Set(["posts"]) });
+
+    expect(sql).toMatch(
+      /SET NAMES utf8mb4;[\s\S]*START TRANSACTION;[\s\S]*INSERT IGNORE INTO `posts`/
+    );
+  });
+
+  it("saves and restores SQL_MODE around the transaction", () => {
+    const t = table("posts", ["id", "title"], ["id"], { oldOnly: [["1", "'A'"]] });
+    const sql = writeSyncSql(summary([t]), { tables: new Set(["posts"]) });
+
+    expect(sql).toMatch(/SET @OLD_SQL_MODE = @@SQL_MODE;/);
+    expect(sql).toMatch(/SET SQL_MODE = 'NO_AUTO_VALUE_ON_ZERO';/);
+    expect(sql).toMatch(/SET SQL_MODE = @OLD_SQL_MODE;/);
+  });
+
+  it("batches multiple missing rows into a single multi-row INSERT statement", () => {
+    const t = table("posts", ["id", "title"], ["id"], {
+      oldOnly: [
+        ["1", "'A'"],
+        ["2", "'B'"],
+        ["3", "'C'"],
+      ],
+    });
+    const sql = writeSyncSql(summary([t]), { tables: new Set(["posts"]) });
+
+    expect(sql).toContain(
+      "INSERT IGNORE INTO `posts` (`id`,`title`) VALUES (1,'A'),(2,'B'),(3,'C');"
+    );
+    // Only one INSERT statement should be emitted for this table.
+    const insertCount = (sql.match(/INSERT IGNORE INTO `posts`/g) ?? []).length;
+    expect(insertCount).toBe(1);
+  });
+
+  it("splits batches when row count exceeds maxRowsPerInsert", () => {
+    const t = table("posts", ["id", "title"], ["id"], {
+      oldOnly: Array.from({ length: 5 }, (_, i) => [String(i + 1), `'x'`]),
+    });
+    const sql = writeSyncSql(summary([t]), {
+      tables: new Set(["posts"]),
+      maxRowsPerInsert: 2,
+    });
+
+    // 5 rows, batch size 2 → 3 INSERT statements (2 + 2 + 1).
+    const insertCount = (sql.match(/INSERT IGNORE INTO `posts`/g) ?? []).length;
+    expect(insertCount).toBe(3);
+  });
+
+  describe("updateOverrides — per-column revert to OLD", () => {
+    const overrideOf = (
+      table: string,
+      pk: string[],
+      cols: string[]
+    ): Map<string, Map<string, Set<string>>> =>
+      new Map([[table, new Map([[pkKey(pk), new Set(cols)]])]]);
+
+    it("emits SET only for explicitly selected columns (not all changed columns)", () => {
+      const t = table("posts", ["id", "title", "body"], ["id"], {
+        changed: [
+          {
+            oldValues: ["3", "'eski başlık'", "'eski içerik'"],
+            newValues: ["3", "'yeni başlık'", "'yeni içerik'"],
+          },
+        ],
+      });
+      const sql = writeSyncSql(summary([t]), {
+        tables: new Set(["posts"]),
+        updateOverrides: overrideOf("posts", ["3"], ["title"]),
+      });
+
+      expect(sql).toContain(
+        "UPDATE `posts` SET `title`='eski başlık' WHERE `id`=3;"
+      );
+      expect(sql).not.toContain("`body`=");
+    });
+
+    it("emits multi-column SET when multiple columns are selected", () => {
+      const t = table("posts", ["id", "title", "body"], ["id"], {
+        changed: [
+          {
+            oldValues: ["3", "'eski t'", "'eski b'"],
+            newValues: ["3", "'yeni t'", "'yeni b'"],
+          },
+        ],
+      });
+      const sql = writeSyncSql(summary([t]), {
+        tables: new Set(["posts"]),
+        updateOverrides: overrideOf("posts", ["3"], ["title", "body"]),
+      });
+
+      expect(sql).toContain(
+        "UPDATE `posts` SET `title`='eski t', `body`='eski b' WHERE `id`=3;"
+      );
+    });
+
+    it("skips selected column when its value did not actually change", () => {
+      const t = table("posts", ["id", "title", "body"], ["id"], {
+        changed: [
+          {
+            oldValues: ["3", "'same'", "'eski'"],
+            newValues: ["3", "'same'", "'yeni'"],
+          },
+        ],
+      });
+      const sql = writeSyncSql(summary([t]), {
+        tables: new Set(["posts"]),
+        updateOverrides: overrideOf("posts", ["3"], ["title"]),
+      });
+
+      // 'title' selected but unchanged → no UPDATE emitted
+      expect(sql).not.toMatch(/\bUPDATE\b/);
+    });
+
+    it("uses AND for composite PK in WHERE clause", () => {
+      const t = table(
+        "user_roles",
+        ["user_id", "role_id", "granted_at"],
+        ["user_id", "role_id"],
+        {
+          changed: [
+            {
+              oldValues: ["1", "5", "'2026-01-01'"],
+              newValues: ["1", "5", "'2026-05-01'"],
+            },
+          ],
+        }
+      );
+      const sql = writeSyncSql(summary([t]), {
+        tables: new Set(["user_roles"]),
+        updateOverrides: overrideOf("user_roles", ["1", "5"], ["granted_at"]),
+      });
+
+      expect(sql).toContain(
+        "UPDATE `user_roles` SET `granted_at`='2026-01-01' WHERE `user_id`=1 AND `role_id`=5;"
+      );
+    });
+
+    it("skips revert when table has no primary key", () => {
+      const t = table("audit_log", ["event", "payload"], [], {
+        changed: [
+          { oldValues: ["'login'", "'a'"], newValues: ["'login'", "'b'"] },
+        ],
+      });
+      const sql = writeSyncSql(summary([t]), {
+        tables: new Set(["audit_log"]),
+        updateOverrides: overrideOf("audit_log", [], ["payload"]),
+      });
+
+      expect(sql).not.toMatch(/\bUPDATE\b/);
+    });
+
+    it("includes a table with reverts even when it has no missing rows", () => {
+      const t = table("posts", ["id", "title"], ["id"], {
+        changed: [{ oldValues: ["3", "'old'"], newValues: ["3", "'new'"] }],
+      });
+      const sql = writeSyncSql(summary([t]), {
+        tables: new Set(["posts"]),
+        updateOverrides: overrideOf("posts", ["3"], ["title"]),
+      });
+
+      expect(sql).toMatch(/tables included: posts/);
+      expect(sql).toContain("UPDATE `posts`");
+    });
+
+    it("adds 'manual reverts' to the mode header when any revert is selected", () => {
+      const t = table("posts", ["id", "title"], ["id"], {
+        changed: [{ oldValues: ["1", "'a'"], newValues: ["1", "'b'"] }],
+      });
+      const sql = writeSyncSql(summary([t]), {
+        tables: new Set(["posts"]),
+        updateOverrides: overrideOf("posts", ["1"], ["title"]),
+      });
+
+      expect(sql).toMatch(/-- mode: missing-only \+ manual reverts/);
+    });
+  });
+
+  it("splits batches when byte size exceeds maxBytesPerInsert", () => {
+    // Long string values to push past a tight byte limit.
+    const t = table("posts", ["id", "body"], ["id"], {
+      oldOnly: [
+        ["1", `'${"a".repeat(200)}'`],
+        ["2", `'${"b".repeat(200)}'`],
+      ],
+    });
+    const sql = writeSyncSql(summary([t]), {
+      tables: new Set(["posts"]),
+      maxBytesPerInsert: 300,
+    });
+
+    const insertCount = (sql.match(/INSERT IGNORE INTO `posts`/g) ?? []).length;
+    expect(insertCount).toBe(2);
   });
 });
